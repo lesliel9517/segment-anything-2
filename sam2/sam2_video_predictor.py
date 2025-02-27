@@ -637,6 +637,10 @@ class SAM2VideoPredictor(SAM2Base):
             _, video_res_masks = self._get_orig_video_res_output(
                 inference_state, all_pred_masks
             )
+            
+            del all_pred_masks, pred_masks_per_obj, pred_masks  # Free memory immediately
+            torch.cuda.empty_cache()  # Ensure CUDA memory is cleared
+
             yield frame_idx, obj_ids, video_res_masks
 
     @torch.inference_mode()
