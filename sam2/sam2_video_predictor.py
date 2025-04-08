@@ -97,6 +97,7 @@ class SAM2VideoPredictor(SAM2Base):
         inference_state["obj_ids"] = []
         # Slice (view) of each object tracking results, sharing the same memory with "output_dict"
         inference_state["output_dict_per_obj"] = {}
+        # TODO SET THIS LRU
         # A temporary storage to hold new outputs when user interact with a frame
         # to add clicks or mask (it's merged into "output_dict" before propagation starts)
         inference_state["temp_output_dict_per_obj"] = {}
@@ -637,9 +638,6 @@ class SAM2VideoPredictor(SAM2Base):
             _, video_res_masks = self._get_orig_video_res_output(
                 inference_state, all_pred_masks
             )
-            
-            del all_pred_masks, pred_masks_per_obj, pred_masks  # Free memory immediately
-            torch.cuda.empty_cache()  # Ensure CUDA memory is cleared
 
             yield frame_idx, obj_ids, video_res_masks
 
@@ -719,34 +717,37 @@ class SAM2VideoPredictor(SAM2Base):
         """Compute the image features on a given frame."""
         # Look up in the cache first (LRU cache)
         cached = inference_state["cached_features"].get(frame_idx)
-        image, backbone_out = cached if cached is not None else (None, None)
+        _, backbone_out = cached if cached is not None else (None, None)
+
         if backbone_out is None:
             # Cache miss -- we will run inference on a single image
             device = inference_state["device"]
-            image = (
+            image_cpu = (
                 inference_state["images"]
                 .get_frame(frame_idx)
-                .to(device)
+                .float()
+                .unsqueeze(0)  # [1, C, H, W]
+            )
+            image_gpu = image_cpu.to(device)
+            backbone_out = self.forward_image(image_gpu)
+            # Cache only the backbone features (image not needed, or only cache CPU image if needed)
+            inference_state["cached_features"].put(frame_idx, (None, backbone_out))
+        else:
+            # Need to get the image from CPU source again
+            image_cpu = (
+                inference_state["images"]
+                .get_frame(frame_idx)
                 .float()
                 .unsqueeze(0)
             )
-            backbone_out = self.forward_image(image)
-            # Cache the most recent frame's feature
-            inference_state["cached_features"].put(frame_idx, (image, backbone_out))
 
-        # Expand the features to have the same dimension as the number of objects
-        expanded_image = image.expand(batch_size, -1, -1, -1)
+        # Expand the image and features for batch size
+        expanded_image = image_cpu.expand(batch_size, -1, -1, -1).to(inference_state["device"])
+
         expanded_backbone_out = {
-            "backbone_fpn": backbone_out["backbone_fpn"].copy(),
-            "vision_pos_enc": backbone_out["vision_pos_enc"].copy(),
+            "backbone_fpn": [feat.expand(batch_size, -1, -1, -1) for feat in backbone_out["backbone_fpn"]],
+            "vision_pos_enc": [pos.expand(batch_size, -1, -1, -1) for pos in backbone_out["vision_pos_enc"]],
         }
-        for i, feat in enumerate(expanded_backbone_out["backbone_fpn"]):
-            expanded_backbone_out["backbone_fpn"][i] = feat.expand(
-                batch_size, -1, -1, -1
-            )
-        for i, pos in enumerate(expanded_backbone_out["vision_pos_enc"]):
-            pos = pos.expand(batch_size, -1, -1, -1)
-            expanded_backbone_out["vision_pos_enc"][i] = pos
 
         features = self._prepare_backbone_features(expanded_backbone_out)
         features = (expanded_image,) + features
