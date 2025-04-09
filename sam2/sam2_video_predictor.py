@@ -713,45 +713,72 @@ class SAM2VideoPredictor(SAM2Base):
         for v in inference_state["frames_tracked_per_obj"].values():
             v.clear()
 
+    # def _get_image_feature(self, inference_state, frame_idx, batch_size):
+    #     """Compute the image features on a given frame."""
+    #     # Look up in the cache first (LRU cache)
+    #     cached = inference_state["cached_features"].get(frame_idx)
+    #     _, backbone_out = cached if cached is not None else (None, None)
+    #
+    #     device = inference_state["device"]
+    #     image = (
+    #         inference_state["images"]
+    #         .get_frame(frame_idx)
+    #         .float()
+    #         .to(device)
+    #         .unsqueeze(0)  # [1, C, H, W]
+    #     )
+    #     if backbone_out is None:
+    #         # Cache miss -- we will run inference on a single image
+    #         backbone_out = self.forward_image(image)
+    #         # Cache only the backbone features (image not needed, or only cache CPU image if needed)
+    #         inference_state["cached_features"].put(frame_idx, (None, backbone_out))
+    #
+    #     # Expand the image and features for batch size
+    #     expanded_image = image.expand(batch_size, -1, -1, -1).to(inference_state["device"])
+    #
+    #     expanded_backbone_out = {
+    #         "backbone_fpn": [feat.expand(batch_size, -1, -1, -1) for feat in backbone_out["backbone_fpn"]],
+    #         "vision_pos_enc": [pos.expand(batch_size, -1, -1, -1) for pos in backbone_out["vision_pos_enc"]],
+    #     }
+    #
+    #     features = self._prepare_backbone_features(expanded_backbone_out)
+    #     features = (expanded_image,) + features
+    #     return features
+
     def _get_image_feature(self, inference_state, frame_idx, batch_size):
-        """Compute the image features on a given frame."""
-        # Look up in the cache first (LRU cache)
-        cached = inference_state["cached_features"].get(frame_idx)
-        _, backbone_out = cached if cached is not None else (None, None)
+        """Compute image features for a given frame with caching."""
+        device = inference_state["device"]
 
-        if backbone_out is None:
-            # Cache miss -- we will run inference on a single image
-            device = inference_state["device"]
-            image_cpu = (
-                inference_state["images"]
-                .get_frame(frame_idx)
-                .float()
-                .unsqueeze(0)  # [1, C, H, W]
-            )
-            image_gpu = image_cpu.to(device)
-            backbone_out = self.forward_image(image_gpu)
-            # Cache only the backbone features (image not needed, or only cache CPU image if needed)
-            inference_state["cached_features"].put(frame_idx, (None, backbone_out))
-        else:
-            # Need to get the image from CPU source again
-            image_cpu = (
-                inference_state["images"]
-                .get_frame(frame_idx)
-                .float()
-                .unsqueeze(0)
-            )
+        # Get cached features or compute new ones
+        _, backbone_out = inference_state["cached_features"].get(frame_idx) or (
+        None, self._compute_features(inference_state, frame_idx, device))
 
-        # Expand the image and features for batch size
-        expanded_image = image_cpu.expand(batch_size, -1, -1, -1).to(inference_state["device"])
+        # Move to GPU and expand for batch size
+        backbone_out_gpu = {k: [feat.to(device).expand(batch_size, -1, -1, -1) for feat in v]
+                            for k, v in backbone_out.items()}
 
-        expanded_backbone_out = {
-            "backbone_fpn": [feat.expand(batch_size, -1, -1, -1) for feat in backbone_out["backbone_fpn"]],
-            "vision_pos_enc": [pos.expand(batch_size, -1, -1, -1) for pos in backbone_out["vision_pos_enc"]],
-        }
+        image = (inference_state["images"]
+                 .get_frame(frame_idx)
+                 .float()
+                 .to(device)
+                 .unsqueeze(0)
+                 .expand(batch_size, -1, -1, -1))
 
-        features = self._prepare_backbone_features(expanded_backbone_out)
-        features = (expanded_image,) + features
-        return features
+        return (image,) + self._prepare_backbone_features(backbone_out_gpu)
+
+    def _compute_features(self, inference_state, frame_idx, device):
+        """Helper to compute and cache features on cache miss."""
+        image = (inference_state["images"]
+                 .get_frame(frame_idx)
+                 .float()
+                 .to(device)
+                 .unsqueeze(0))
+
+        backbone_out_gpu = self.forward_image(image)
+        backbone_out_cpu = {k: [feat.cpu() for feat in v] for k, v in backbone_out_gpu.items()}
+
+        inference_state["cached_features"].put(frame_idx, (None, backbone_out_cpu))
+        return backbone_out_cpu
 
     def _run_single_frame_inference(
         self,
