@@ -4,16 +4,17 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-import os
 import warnings
 from collections import OrderedDict
 from threading import Thread
+import os
+from typing import Optional, Any, Iterable, Tuple
 
 import numpy as np
 import torch
-from PIL import Image
-from torchvision import transforms
 from tqdm import tqdm
+from torchvision import transforms
+from PIL import Image
 
 
 def get_sdpa_settings():
@@ -109,13 +110,13 @@ class AsyncVideoFrameLoader:
     """
 
     def __init__(
-        self,
-        img_paths,
-        image_size,
-        offload_video_to_cpu,
-        img_mean,
-        img_std,
-        compute_device,
+            self,
+            img_paths,
+            image_size,
+            offload_video_to_cpu,
+            img_mean,
+            img_std,
+            compute_device,
     ):
         self.img_paths = img_paths
         self.image_size = image_size
@@ -172,13 +173,13 @@ class AsyncVideoFrameLoader:
 
 
 def load_video_frames(
-    video_path,
-    image_size,
-    offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
-    async_loading_frames=False,
-    compute_device=torch.device("cuda"),
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean=(0.485, 0.456, 0.406),
+        img_std=(0.229, 0.224, 0.225),
+        async_loading_frames=False,
+        compute_device=torch.device("cuda"),
 ):
     """
     Load the video frames from video_path. The frames are resized to image_size as in
@@ -213,13 +214,13 @@ def load_video_frames(
 
 
 def load_video_frames_from_jpg_images(
-    video_path,
-    image_size,
-    offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
-    async_loading_frames=False,
-    compute_device=torch.device("cuda"),
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean=(0.485, 0.456, 0.406),
+        img_std=(0.229, 0.224, 0.225),
+        async_loading_frames=False,
+        compute_device=torch.device("cuda"),
 ):
     """
     Load the video frames from a directory of JPEG files ("<frame_index>.jpg" format).
@@ -280,12 +281,12 @@ def load_video_frames_from_jpg_images(
 
 
 def load_video_frames_from_video_file(
-    video_path,
-    image_size,
-    offload_video_to_cpu,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
-    compute_device=torch.device("cuda"),
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        img_mean=(0.485, 0.456, 0.406),
+        img_std=(0.229, 0.224, 0.225),
+        compute_device=torch.device("cuda"),
 ):
     """Load the video frames from a video file."""
     import decord
@@ -312,102 +313,226 @@ def load_video_frames_from_video_file(
 
 
 class LRUCache:
-    def __init__(self, capacity: int):
-        self.cache = OrderedDict()
-        self.capacity = capacity
+    def __init__(self, gpu_capacity: int, cpu_capacity: Optional[int] = None, device: str = "cuda"):
+        """
+        LRU cache with GPU and CPU levels.
+        Prioritizes GPU storage, falls back to CPU when GPU is full.
 
-    def get(self, key):
-        if key not in self.cache:
-            return None
-        # Move the key to the end to show that it was recently used
-        self.cache.move_to_end(key)
-        return self.cache[key]
+        Args:
+            gpu_capacity: Max entries in GPU memory
+            cpu_capacity: Max entries in CPU memory (defaults to gpu_capacity if None)
+            device: Target device for GPU cache (e.g., "cuda", "cuda:0", "cpu")
+        """
+        self.gpu_cache = OrderedDict()
+        self.cpu_cache = OrderedDict()
+        self.gpu_capacity = gpu_capacity
+        self.cpu_capacity = cpu_capacity if cpu_capacity is not None else gpu_capacity
+        self.device = torch.device(device)  # Set device from parameter
 
-    def put(self, key, value):
-        # Insert the item or update the existing one
-        if key in self.cache:
-            self.cache.move_to_end(key)
-        self.cache[key] = value
-        # If the cache exceeds the capacity, pop the first (least recently used) item
-        if len(self.cache) > self.capacity:
-            self.cache.popitem(last=False)
+    def get(self, key: Any) -> Any:
+        """Retrieve value by key, ensuring it is on the specified device."""
+        if key in self.gpu_cache:
+            self.gpu_cache.move_to_end(key)
+            return self.gpu_cache[key]  # Already on self.device
+
+        if key in self.cpu_cache:
+            value = self.cpu_cache.pop(key)
+            value = self._to_gpu(value)  # Move to self.device
+            self._insert_to_gpu(key, value)  # Move to GPU cache
+            return value
+
+        return None
+
+    def peek(self, key: Any) -> Any:
+        """Return value without affecting LRU order."""
+        return self.gpu_cache.get(key, self.cpu_cache.get(key))
+
+    def put(self, key: Any, value: Any) -> None:
+        """Insert a single key-value pair."""
+        self._insert(key, value)
+
+    def bulk_put(self, items: Iterable[Tuple[Any, Any]]) -> None:
+        """Insert multiple key-value pairs efficiently."""
+        gpu_items = []
+        cpu_items = []
+
+        for key, value in items:
+            if len(self.gpu_cache) < self.gpu_capacity:
+                gpu_items.append((key, value))
+            elif len(self.cpu_cache) < self.cpu_capacity:
+                cpu_items.append((key, value))
+            else:
+                self._evict(self.cpu_cache)
+                cpu_items.append((key, value))
+
+        for key, value in gpu_items:
+            self._insert_to_gpu(key, value)
+        for key, value in cpu_items:
+            self._insert_to_cpu(key, value)
+
+    def clear(self) -> None:
+        """Clear caches and free memory efficiently."""
+        self._release_batch(self.gpu_cache.values())
+        self._release_batch(self.cpu_cache.values())
+        self.gpu_cache.clear()
+        self.cpu_cache.clear()
+        torch.cuda.empty_cache()
+
+    def _insert(self, key: Any, value: Any) -> None:
+        """Insert key-value pair with GPU priority."""
+        if len(self.gpu_cache) < self.gpu_capacity:
+            self._insert_to_gpu(key, value)
+        elif len(self.cpu_cache) < self.cpu_capacity:
+            self._insert_to_cpu(key, value)
+        else:
+            self._evict(self.cpu_cache)
+            self._insert_to_cpu(key, value)
+
+    def _insert_to_gpu(self, key: Any, value: Any) -> None:
+        """Insert into GPU cache, ensuring data is on GPU."""
+        value = self._to_gpu(value)  # Move to specified GPU device
+        self._release_if_exists(self.gpu_cache, key)
+        self.gpu_cache[key] = value
+        self.gpu_cache.move_to_end(key)
+
+        while len(self.gpu_cache) > self.gpu_capacity:
+            self._evict(self.gpu_cache)
+
+    def _insert_to_cpu(self, key: Any, value: Any) -> None:
+        """Insert into CPU cache, ensuring data is on CPU."""
+        value = self._to_cpu(value)  # Move to CPU
+        self._release_if_exists(self.cpu_cache, key)
+        self.cpu_cache[key] = value
+        self.cpu_cache.move_to_end(key)
+
+        while len(self.cpu_cache) > self.cpu_capacity:
+            self._evict(self.cpu_cache)
+
+    def _release_if_exists(self, cache: OrderedDict, key: Any) -> None:
+        """Release existing value if key exists."""
+        if key in cache:
+            value = cache[key]
+            self._release(value)
+            del cache[key]
+
+    def _evict(self, cache: OrderedDict) -> None:
+        """Evict least recently used item."""
+        key, value = cache.popitem(last=False)
+        self._release(value)
+
+    def _to_gpu(self, obj: Any) -> Any:
+        """Move tensors to specified GPU device."""
+        if isinstance(obj, torch.Tensor) and self.device.type != "cpu" and not obj.is_cuda:
+            return obj.to(self.device)
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(self._to_gpu(v) for v in obj)
+        if isinstance(obj, dict):
+            return {k: self._to_gpu(v) for k, v in obj.items()}
+        return obj
+
+    def _to_cpu(self, obj: Any) -> Any:
+        """Move tensors to CPU."""
+        if isinstance(obj, torch.Tensor) and obj.is_cuda:
+            return obj.detach().cpu()
+        if isinstance(obj, (list, tuple)):
+            return type(obj)(self._to_cpu(v) for v in obj)
+        if isinstance(obj, dict):
+            return {k: self._to_cpu(v) for k, v in obj.items()}
+        return obj
+
+    def _release(self, obj: Any) -> None:
+        """Release single object memory."""
+        if isinstance(obj, torch.Tensor) and obj.is_cuda:
+            del obj
+        elif isinstance(obj, (list, tuple, dict)):
+            values = obj.values() if isinstance(obj, dict) else obj
+            for v in values:
+                self._release(v)
+
+    def _release_batch(self, objects: Iterable[Any]) -> None:
+        """Batch release for better performance."""
+        for obj in objects:
+            self._release(obj)
+        torch.cuda.empty_cache()
+
+    def _get_size(self, obj: Any) -> int:
+        """Estimate object size in bytes."""
+        if isinstance(obj, torch.Tensor):
+            return obj.element_size() * obj.nelement()
+        if isinstance(obj, (list, tuple)):
+            return sum(self._get_size(v) for v in obj)
+        if isinstance(obj, dict):
+            return sum(self._get_size(v) for v in obj.values())
+        return 0
 
 
 class VideoFrameLoader:
     def __init__(
-        self,
-        img_paths,
-        image_size,
-        img_mean,
-        img_std,
-        offload_to_cpu,
-        compute_device,
-        cache_size=100,
+            self,
+            img_paths,
+            image_size,
+            img_mean,
+            img_std,
+            offload_to_cpu,
+            compute_device,
+            cache_size=100,
+            neighborhood=10,
     ):
-        """
-        Initialize the video frame loader with image paths, image size, mean, std, and caching options.
-        """
         self.img_paths = img_paths
         self.image_size = image_size
         self.img_mean = img_mean
         self.img_std = img_std
         self.offload_to_cpu = offload_to_cpu
         self.device = compute_device
-        self.num_frames = len(img_paths)
         self.cache_size = cache_size
+        self.neighborhood = neighborhood
+        self.num_frames = len(img_paths)
 
-        # Initialize image transformations
-        self.transform = transforms.Compose(
-            [
-                transforms.Resize((image_size, image_size)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=img_mean, std=img_std),
-            ]
-        )
+        self.transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=img_mean, std=img_std),
+        ])
 
-        # Create an LRU cache for frames
-        self.frame_cache = LRUCache(capacity=self.cache_size)
+        self.frame_cache = LRUCache(gpu_capacity=cache_size, cpu_capacity=cache_size, device=self.device)
         self.video_width, self.video_height = self._get_frame_dimensions()
 
     def _get_frame_dimensions(self):
-        """Get the dimensions of the frames (width, height)."""
-        img = Image.open(self.img_paths[0])
-        return img.width, img.height
+        with Image.open(self.img_paths[0]) as img:
+            return img.width, img.height
 
     def _load_frame(self, idx):
-        """Internal method to load and preprocess a frame."""
-        img = Image.open(self.img_paths[idx]).convert("RGB")
-        img_tensor = self.transform(img)
-        return img_tensor
+        with Image.open(self.img_paths[idx]).convert("RGB") as img:
+            tensor = self.transform(img)
+        return tensor.cpu() if self.offload_to_cpu else tensor.to(self.device)
+
+    def _preload_neighbors(self, idx):
+        half = self.neighborhood
+        start = max(0, idx - half)
+        end = min(self.num_frames, idx + half + 1)
+        for i in range(start, end):
+            if self.frame_cache.peek(i) is None:
+                frame = self._load_frame(i)
+                self.frame_cache.put(i, frame)
 
     def get_frame(self, idx):
-        """Fetch a frame using the LRU cache or load it if it's not cached."""
-        # Check if frame is in cache
-        cached_frame = self.frame_cache.get(idx)
-        if cached_frame is not None:
-            return cached_frame
+        cached = self.frame_cache.get(idx)
+        if cached is not None:
+            return cached
 
-        # Load the frame if it's not in cache
-        frame = self._load_frame(idx)
-
-        # Add the frame to the cache
-        self.frame_cache.put(idx, frame)
-
-        # Move to device if not offloading to CPU
-        if not self.offload_to_cpu:
-            frame = frame.to(self.device)
-
-        return frame
+        # Preload neighborhood frames on miss
+        self._preload_neighbors(idx)
+        return self.frame_cache.get(idx)  # Must be there now
 
 
 def load_video_frames_with_cache(
-    video_path,
-    image_size,
-    offload_video_to_cpu,
-    cache_size=100,
-    img_mean=(0.485, 0.456, 0.406),
-    img_std=(0.229, 0.224, 0.225),
-    compute_device=torch.device("cuda"),
+        video_path,
+        image_size,
+        offload_video_to_cpu,
+        cache_size=100,
+        img_mean=(0.485, 0.456, 0.406),
+        img_std=(0.229, 0.224, 0.225),
+        compute_device=torch.device("cuda"),
 ):
     """
     Load video frames from a directory of JPEG files with LRU cache for high efficiency.

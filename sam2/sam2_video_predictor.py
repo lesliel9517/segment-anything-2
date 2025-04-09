@@ -26,17 +26,17 @@ class SAM2VideoPredictor(SAM2Base):
     """The predictor class to handle user interactions and manage inference states."""
 
     def __init__(
-        self,
-        fill_hole_area=0,
-        # whether to apply non-overlapping constraints on the output object masks
-        non_overlap_masks=False,
-        # whether to clear non-conditioning memory of the surrounding frames (which may contain outdated information) after adding correction clicks;
-        # note that this would only apply to *single-object tracking* unless `clear_non_cond_mem_for_multi_obj` is also set to True)
-        clear_non_cond_mem_around_input=False,
-        # if `add_all_frames_to_correct_as_cond` is True, we also append to the conditioning frame list any frame that receives a later correction click
-        # if `add_all_frames_to_correct_as_cond` is False, we conditioning frame list to only use those initial conditioning frames
-        add_all_frames_to_correct_as_cond=False,
-        **kwargs,
+            self,
+            fill_hole_area=0,
+            # whether to apply non-overlapping constraints on the output object masks
+            non_overlap_masks=False,
+            # whether to clear non-conditioning memory of the surrounding frames (which may contain outdated information) after adding correction clicks;
+            # note that this would only apply to *single-object tracking* unless `clear_non_cond_mem_for_multi_obj` is also set to True)
+            clear_non_cond_mem_around_input=False,
+            # if `add_all_frames_to_correct_as_cond` is True, we also append to the conditioning frame list any frame that receives a later correction click
+            # if `add_all_frames_to_correct_as_cond` is False, we conditioning frame list to only use those initial conditioning frames
+            add_all_frames_to_correct_as_cond=False,
+            **kwargs,
     ):
         super().__init__(**kwargs)
         self.fill_hole_area = fill_hole_area
@@ -46,13 +46,13 @@ class SAM2VideoPredictor(SAM2Base):
 
     @torch.inference_mode()
     def init_state(
-        self,
-        video_path,
-        offload_video_to_cpu=False,
-        offload_state_to_cpu=False,
-        async_loading_frames=False,
-        image_cache_size=500,  # Adjust cache size as needed
-        image_feature_cache_size=10,  # Adjust cache size as needed
+            self,
+            video_path,
+            offload_video_to_cpu=False,
+            offload_state_to_cpu=False,
+            async_loading_frames=False,
+            image_cache_size=500,  # Adjust cache size as needed
+            image_feature_cache_size=10,  # Adjust cache size as needed
     ):
         """Initialize an inference state."""
         compute_device = self.device  # device of the model
@@ -88,7 +88,8 @@ class SAM2VideoPredictor(SAM2Base):
         inference_state["point_inputs_per_obj"] = {}
         inference_state["mask_inputs_per_obj"] = {}
         # visual features on a small number of recently visited frames for quick interactions
-        inference_state["cached_features"] = LRUCache(capacity=image_feature_cache_size)
+        inference_state["cached_features"] = LRUCache(
+            gpu_capacity=image_feature_cache_size, cpu_capacity=image_feature_cache_size, device=self.device)
         # values that don't change across frames (so we only need to hold one copy of them)
         inference_state["constants"] = {}
         # mapping between client-side object id and model-side object index
@@ -170,15 +171,15 @@ class SAM2VideoPredictor(SAM2Base):
 
     @torch.inference_mode()
     def add_new_points_or_box(
-        self,
-        inference_state,
-        frame_idx,
-        obj_id,
-        points=None,
-        labels=None,
-        clear_old_points=True,
-        normalize_coords=True,
-        box=None,
+            self,
+            inference_state,
+            frame_idx,
+            obj_id,
+            points=None,
+            labels=None,
+            clear_old_points=True,
+            normalize_coords=True,
+            box=None,
     ):
         """Add new points to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -309,11 +310,11 @@ class SAM2VideoPredictor(SAM2Base):
 
     @torch.inference_mode()
     def add_new_mask(
-        self,
-        inference_state,
-        frame_idx,
-        obj_id,
-        mask,
+            self,
+            inference_state,
+            frame_idx,
+            obj_id,
+            mask,
     ):
         """Add new mask to a frame."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -414,11 +415,11 @@ class SAM2VideoPredictor(SAM2Base):
         return any_res_masks, video_res_masks
 
     def _consolidate_temp_output_across_obj(
-        self,
-        inference_state,
-        frame_idx,
-        is_cond,
-        consolidate_at_video_res=False,
+            self,
+            inference_state,
+            frame_idx,
+            is_cond,
+            consolidate_at_video_res=False,
     ):
         """
         Consolidate the per-object temporary outputs in `temp_output_dict_per_obj` on
@@ -474,7 +475,7 @@ class SAM2VideoPredictor(SAM2Base):
             obj_mask = out["pred_masks"]
             consolidated_pred_masks = consolidated_out[consolidated_mask_key]
             if obj_mask.shape[-2:] == consolidated_pred_masks.shape[-2:]:
-                consolidated_pred_masks[obj_idx : obj_idx + 1] = obj_mask
+                consolidated_pred_masks[obj_idx: obj_idx + 1] = obj_mask
             else:
                 # Resize first if temporary object mask has a different resolution
                 resized_obj_mask = torch.nn.functional.interpolate(
@@ -483,7 +484,7 @@ class SAM2VideoPredictor(SAM2Base):
                     mode="bilinear",
                     align_corners=False,
                 )
-                consolidated_pred_masks[obj_idx : obj_idx + 1] = resized_obj_mask
+                consolidated_pred_masks[obj_idx: obj_idx + 1] = resized_obj_mask
 
         return consolidated_out
 
@@ -555,11 +556,11 @@ class SAM2VideoPredictor(SAM2Base):
 
     @torch.inference_mode()
     def propagate_in_video(
-        self,
-        inference_state,
-        start_frame_idx=None,
-        max_frame_num_to_track=None,
-        reverse=False,
+            self,
+            inference_state,
+            start_frame_idx=None,
+            max_frame_num_to_track=None,
+            reverse=False,
     ):
         """Propagate the input points across frames to track in the entire video."""
         self.propagate_in_video_preflight(inference_state)
@@ -643,7 +644,7 @@ class SAM2VideoPredictor(SAM2Base):
 
     @torch.inference_mode()
     def clear_all_prompts_in_frame(
-        self, inference_state, frame_idx, obj_id, need_output=True
+            self, inference_state, frame_idx, obj_id, need_output=True
     ):
         """Remove all input points or mask in a specific frame for a given object."""
         obj_idx = self._obj_id_to_idx(inference_state, obj_id)
@@ -713,85 +714,73 @@ class SAM2VideoPredictor(SAM2Base):
         for v in inference_state["frames_tracked_per_obj"].values():
             v.clear()
 
-    # def _get_image_feature(self, inference_state, frame_idx, batch_size):
-    #     """Compute the image features on a given frame."""
-    #     # Look up in the cache first (LRU cache)
-    #     cached = inference_state["cached_features"].get(frame_idx)
-    #     _, backbone_out = cached if cached is not None else (None, None)
+    # def _get_image_feature(self, state, frame_idx, batch_size):
+    #     """Compute and cache image features for a given frame."""
+    #     device = state["device"]
+    #     cached = state["cached_features"].get(frame_idx)
     #
-    #     device = inference_state["device"]
-    #     image = (
-    #         inference_state["images"]
-    #         .get_frame(frame_idx)
-    #         .float()
-    #         .to(device)
-    #         .unsqueeze(0)  # [1, C, H, W]
-    #     )
-    #     if backbone_out is None:
-    #         # Cache miss -- we will run inference on a single image
+    #     if cached is None or (backbone_out := cached[1]) is None:
+    #         image = state["images"].get_frame(frame_idx).float().unsqueeze(0).to(device)
     #         backbone_out = self.forward_image(image)
-    #         # Cache only the backbone features (image not needed, or only cache CPU image if needed)
-    #         inference_state["cached_features"].put(frame_idx, (None, backbone_out))
+    #         state["cached_features"].put(frame_idx, (None, backbone_out))
+    #     else:
+    #         image = state["images"].get_frame(frame_idx).float().unsqueeze(0).to(device)
     #
-    #     # Expand the image and features for batch size
-    #     expanded_image = image.expand(batch_size, -1, -1, -1).to(inference_state["device"])
+    #     expanded_image = image.expand(batch_size, -1, -1, -1)
     #
-    #     expanded_backbone_out = {
-    #         "backbone_fpn": [feat.expand(batch_size, -1, -1, -1) for feat in backbone_out["backbone_fpn"]],
-    #         "vision_pos_enc": [pos.expand(batch_size, -1, -1, -1) for pos in backbone_out["vision_pos_enc"]],
+    #     def expand_list(tensors):
+    #         return [t.expand(batch_size, -1, -1, -1) for t in tensors]
+    #
+    #     expanded_backbone = {
+    #         k: expand_list(v) for k, v in backbone_out.items()
     #     }
     #
-    #     features = self._prepare_backbone_features(expanded_backbone_out)
-    #     features = (expanded_image,) + features
+    #     features = (expanded_image,) + self._prepare_backbone_features(expanded_backbone)
     #     return features
 
-    def _get_image_feature(self, inference_state, frame_idx, batch_size):
-        """Compute image features for a given frame with caching."""
-        device = inference_state["device"]
+    def _get_image_feature(self, state, frame_idx, batch_size, neighborhood=5):
+        device = state["device"]
+        images = state["images"]
+        cache = state["cached_features"]
+        offload = images.offload_to_cpu
 
-        # Get cached features or compute new ones
-        _, backbone_out = inference_state["cached_features"].get(frame_idx) or (
-        None, self._compute_features(inference_state, frame_idx, device))
+        def cache_feat(idx):
+            if cache.peek(idx) is not None:
+                return
+            image = images.get_frame(idx).float().unsqueeze(0).to(device)
+            feats = self.forward_image(image)
+            feats = {k: [t.cpu() for t in v] for k, v in feats.items()} if offload else feats
+            cache.put(idx, (None, feats))
 
-        # Move to GPU and expand for batch size
-        backbone_out_gpu = {k: [feat.to(device).expand(batch_size, -1, -1, -1) for feat in v]
-                            for k, v in backbone_out.items()}
+        # Preload neighborhood features
+        start = max(0, frame_idx - neighborhood)
+        end = min(images.num_frames, frame_idx + neighborhood + 1)
+        for i in range(start, end):
+            cache_feat(i)
 
-        image = (inference_state["images"]
-                 .get_frame(frame_idx)
-                 .float()
-                 .to(device)
-                 .unsqueeze(0)
-                 .expand(batch_size, -1, -1, -1))
+        # Retrieve current frame features
+        feats = cache.get(frame_idx)[1]
+        if offload:
+            feats = {k: [t.to(device) for t in v] for k, v in feats.items()}
 
-        return (image,) + self._prepare_backbone_features(backbone_out_gpu)
+        image = images.get_frame(frame_idx).float().unsqueeze(0).to(device)
+        expanded_image = image.expand(batch_size, -1, -1, -1)
+        expanded_feats = {k: [t.expand(batch_size, -1, -1, -1) for t in v] for k, v in feats.items()}
 
-    def _compute_features(self, inference_state, frame_idx, device):
-        """Helper to compute and cache features on cache miss."""
-        image = (inference_state["images"]
-                 .get_frame(frame_idx)
-                 .float()
-                 .to(device)
-                 .unsqueeze(0))
-
-        backbone_out_gpu = self.forward_image(image)
-        backbone_out_cpu = {k: [feat.cpu() for feat in v] for k, v in backbone_out_gpu.items()}
-
-        inference_state["cached_features"].put(frame_idx, (None, backbone_out_cpu))
-        return backbone_out_cpu
+        return (expanded_image,) + self._prepare_backbone_features(expanded_feats)
 
     def _run_single_frame_inference(
-        self,
-        inference_state,
-        output_dict,
-        frame_idx,
-        batch_size,
-        is_init_cond_frame,
-        point_inputs,
-        mask_inputs,
-        reverse,
-        run_mem_encoder,
-        prev_sam_mask_logits=None,
+            self,
+            inference_state,
+            output_dict,
+            frame_idx,
+            batch_size,
+            is_init_cond_frame,
+            point_inputs,
+            mask_inputs,
+            reverse,
+            run_mem_encoder,
+            prev_sam_mask_logits=None,
     ):
         """Run tracking on a single frame based on current inputs and previous memory."""
         # Retrieve correct image features
@@ -849,13 +838,13 @@ class SAM2VideoPredictor(SAM2Base):
         return compact_current_out, pred_masks_gpu
 
     def _run_memory_encoder(
-        self,
-        inference_state,
-        frame_idx,
-        batch_size,
-        high_res_masks,
-        object_score_logits,
-        is_mask_from_pts,
+            self,
+            inference_state,
+            frame_idx,
+            batch_size,
+            high_res_masks,
+            object_score_logits,
+            is_mask_from_pts,
     ):
         """
         Run the memory encoder on `high_res_masks`. This is usually after applying
@@ -1080,12 +1069,12 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
         return backbone_out
 
     def _forward_sam_heads(
-        self,
-        backbone_features,
-        point_inputs=None,
-        mask_inputs=None,
-        high_res_features=None,
-        multimask_output=False,
+            self,
+            backbone_features,
+            point_inputs=None,
+            mask_inputs=None,
+            high_res_features=None,
+            multimask_output=False,
     ):
         """
         Identical to the corresponding method in the parent (SAM2VideoPredictor), but
@@ -1215,12 +1204,12 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
         )
 
     def _encode_new_memory(
-        self,
-        current_vision_feats,
-        feat_sizes,
-        pred_masks_high_res,
-        object_score_logits,
-        is_mask_from_pts,
+            self,
+            current_vision_feats,
+            feat_sizes,
+            pred_masks_high_res,
+            object_score_logits,
+            is_mask_from_pts,
     ):
         """
         Identical to the corresponding method in the parent (SAM2VideoPredictor), but
@@ -1261,8 +1250,8 @@ class SAM2VideoPredictorVOS(SAM2VideoPredictor):
         if self.no_obj_embed_spatial is not None:
             is_obj_appearing = (object_score_logits > 0).float()
             maskmem_features += (
-                1 - is_obj_appearing[..., None, None]
-            ) * self.no_obj_embed_spatial[..., None, None].expand(
+                                        1 - is_obj_appearing[..., None, None]
+                                ) * self.no_obj_embed_spatial[..., None, None].expand(
                 *maskmem_features.shape
             )
 
