@@ -4,17 +4,17 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import os
 import warnings
 from collections import OrderedDict
 from threading import Thread
-import os
-from typing import Optional, Any, Iterable, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
 import numpy as np
 import torch
-from tqdm import tqdm
-from torchvision import transforms
 from PIL import Image
+from torchvision import transforms
+from tqdm import tqdm
 
 
 def get_sdpa_settings():
@@ -546,13 +546,19 @@ def load_video_frames_with_cache(
             "Only JPEG frames are supported. Use ffmpeg to extract frames if needed."
         )
 
-    # Get sorted list of JPEG frame files
+        # Get sorted list of JPEG frame files
     frame_names = [
         p
         for p in os.listdir(jpg_folder)
         if os.path.splitext(p)[-1] in [".jpg", ".jpeg", ".JPG", ".JPEG"]
     ]
-    frame_names.sort(key=lambda p: int(os.path.splitext(p)[0]))
+    # 修复：使用自然排序处理包含文本和数字的文件名
+    import re
+    def natural_sort_key(path):
+        """Sort file paths by their numeric values in names."""
+        return [int(text) if text.isdigit() else text.lower() for text in re.split(r'(\d+)', str(path))]
+
+    frame_names.sort(key=natural_sort_key)
 
     # Ensure there are frames available
     num_frames = len(frame_names)

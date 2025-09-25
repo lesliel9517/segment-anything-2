@@ -641,7 +641,86 @@ class SAM2VideoPredictor(SAM2Base):
             )
 
             yield frame_idx, obj_ids, video_res_masks
+    @torch.inference_mode()
+    def infer_single_frame(self, inference_state, frame_idx):
+        """
+        Run inference on a single frame using existing points/masks in the inference state.
+        Args:
+            inference_state (dict): The current state of the tracking process.
+            frame_idx (int): Index of the frame to run inference on.
+        Returns:
+            frame_idx (int): Same as input; the index of the processed frame.
+            obj_ids (list): List of currently tracked object IDs.
+            video_res_masks (Tensor): Segmentation masks predicted for the objects in the frame.
+        """
+        if frame_idx >= inference_state["num_frames"]:
+            raise ValueError(
+                f"Frame index {frame_idx} out of range (num_frames={inference_state['num_frames']})."
+            )
 
+        # Ensure inference state is ready
+        self.propagate_in_video_preflight(inference_state)
+
+        batch_size = self._get_obj_num(inference_state)
+
+        # Ensure that initial conditioning points exist
+        if batch_size == 0:
+            raise RuntimeError(
+                "No objects to track. Please add points or masks for at least one object first."
+            )
+
+        obj_ids = inference_state["obj_ids"]
+        pred_masks_per_obj = [None] * batch_size
+
+        for obj_idx in range(batch_size):
+            obj_output_dict = inference_state["output_dict_per_obj"][obj_idx]
+
+            # Check if this frame has conditioning inputs
+            if frame_idx in obj_output_dict["cond_frame_outputs"]:
+                storage_key = "cond_frame_outputs"
+                current_out = obj_output_dict[storage_key][frame_idx]
+                device = inference_state["device"]
+                pred_masks = current_out["pred_masks"].to(device, non_blocking=True)
+
+                if self.clear_non_cond_mem_around_input:
+                    # clear non-conditioning memory of the surrounding frames
+                    self._clear_obj_non_cond_mem_around_input(
+                        inference_state, frame_idx, obj_idx
+                    )
+            else:
+                # Run model inference for this frame
+                storage_key = "non_cond_frame_outputs"
+                current_out, pred_masks = self._run_single_frame_inference(
+                    inference_state=inference_state,
+                    output_dict=obj_output_dict,
+                    frame_idx=frame_idx,
+                    batch_size=1,
+                    is_init_cond_frame=False,
+                    point_inputs=None,
+                    mask_inputs=None,
+                    reverse=False,
+                    run_mem_encoder=True,
+                )
+                obj_output_dict[storage_key][frame_idx] = current_out
+
+            # Mark frame as tracked for this object
+            inference_state["frames_tracked_per_obj"][obj_idx][frame_idx] = {
+                "reverse": False
+            }
+            pred_masks_per_obj[obj_idx] = pred_masks
+
+        # Consolidate masks for all objects
+        if len(pred_masks_per_obj) > 1:
+            all_pred_masks = torch.cat(pred_masks_per_obj, dim=0)
+        else:
+            all_pred_masks = pred_masks_per_obj[0]
+
+        # Convert output to original video resolution
+        _, video_res_masks = self._get_orig_video_res_output(
+            inference_state, all_pred_masks
+        )
+
+        return frame_idx, obj_ids, video_res_masks
     @torch.inference_mode()
     def clear_all_prompts_in_frame(
             self, inference_state, frame_idx, obj_id, need_output=True
